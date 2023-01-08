@@ -1,0 +1,137 @@
+<html>
+    <head>
+        <style>
+            html, body {
+                margin: 0;
+                padding: 0;
+                background-color: #000000;
+            }
+        </style>
+    </head>
+    <body>
+        <img src="" id="character" />
+
+        <script>
+            const FRAMES = [
+                ['talking1.png', 'talking2.png'],
+                ['quiet1.png', 'quiet2.png'],
+            ];
+            const THRESHOLD = 0.05;
+
+            const context = new window.AudioContext;
+
+            const rollingVolume = new Array(1000);
+            rollingVolume.fill(0);
+            let rollingVolumeIndex = 0;
+            let volume = 0;
+            let lastChangeTime = 0;
+            let frame = 0;
+            let lastTalkingTime = 0;
+            let lastEffectChangeTime = 0;
+            let talking = false;
+
+            const BYTE_READER_PROCESSOR = `
+            class ByteReaderProcessor extends AudioWorkletProcessor {
+                process(inputs, outputs, parameters) {
+                    const input = inputs[0][0];
+                    this.port.postMessage(0);
+                    if (!input) {
+                        return true;
+                    }
+
+
+                    let total = 0;
+                    for (let i = 0; i < input.length; i++) {
+                        total += Math.abs(input[i]);
+                    }
+
+                    this.port.postMessage(total / input.length);
+
+                    return true;
+                }
+            }
+            
+            registerProcessor('byte-reader-processor', ByteReaderProcessor);`;
+
+            const contextStart = () => {
+                navigator.mediaDevices.getUserMedia({audio: true}).then(stream => {
+                    const microphone = context.createMediaStreamSource(stream);
+                    console.log(stream);
+                    const readerWorkletUrl = URL.createObjectURL(new Blob([BYTE_READER_PROCESSOR], {type: 'application/javascript'}));
+                    const response = context.audioWorklet.addModule(readerWorkletUrl);
+                    response.then(() => {
+                        const readerNode = new AudioWorkletNode(context, 'byte-reader-processor');
+                        readerNode.port.onmessage = (event) => {
+                            const data = event.data;
+
+                            if (data > THRESHOLD) {
+                                lastTalkingTime = Date.now();
+                            }
+
+                            volume = data;
+
+                            rollingVolume[rollingVolumeIndex] = data;
+                            rollingVolumeIndex = (rollingVolumeIndex + 1) % rollingVolume.length;
+                        };
+
+                        microphone.connect(readerNode);
+                    });
+                });
+            };
+
+            const attemptResume = () => {
+                if (context.state === 'running') {
+                    contextStart();
+                } else {
+                    context.resume();
+                    setTimeout(attemptResume, 1000);
+                }
+            };
+            attemptResume();
+
+            const character = document.getElementById('character');
+
+            const animate = () => {
+                const time = Date.now();
+
+                if (time - lastChangeTime > 2000) {
+                    lastChangeTime = time;
+                    frame += 1;
+                }
+
+                let averageVolume = 0;
+                for (let i = 0; i < rollingVolume.length; i++) {
+                    averageVolume += rollingVolume[i];
+                }
+                averageVolume /= rollingVolume.length;
+
+                const activelyTalking = time - lastTalkingTime < 500;
+                const desiredEffectTalking = volume > averageVolume;
+                const canChange = time - lastEffectChangeTime > 100;
+                if (canChange && activelyTalking) {
+                    talking = desiredEffectTalking;
+                    lastEffectChangeTime = time;
+                }
+
+                if (!activelyTalking) {
+                    talking = false;
+                }
+
+                if (talking) {
+                    frame = frame % FRAMES[0].length;
+                    if (!character.src.endsWith(FRAMES[0][frame])) {
+                        character.src = FRAMES[0][frame];
+                    }
+                } else {
+                    frame = frame % FRAMES[1].length;
+                    if (!character.src.endsWith(FRAMES[1][frame])) {
+                        character.src = FRAMES[1][frame];
+                    }
+                }
+
+                window.requestAnimationFrame(animate);
+            };
+            window.requestAnimationFrame(animate);
+        </script>
+    </body>
+</html>
